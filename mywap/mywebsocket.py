@@ -1,5 +1,4 @@
 from __future__ import print_function
-import uuid
 import json
 from SimpleWebSocketServer import SimpleWebSocketServer, WebSocket
 from whatsapp_client.whatsapp import WhatsAppWebClient
@@ -12,7 +11,7 @@ class WhatsAppWeb(WebSocket):
     clientInstances = None
 
     def sendError(self, reason, tag=None):
-        eprint("sending error: " + reason)
+        print("sending error: " + reason)
 
     def _send_message_text(self, data):
         tag = str(getTimestamp())
@@ -33,12 +32,12 @@ class WhatsAppWeb(WebSocket):
             print(inst)
 
     def handleConnected(self):
-        eprint(self.address, "connected to backend")
+        print(self.address, "connected to backend")
 
     def handleClose(self):
-        eprint(self.address, "closed connection to backend")
+        print(self.address, "closed connection to backend")
 
 
 server = SimpleWebSocketServer("", 2020, WhatsAppWeb)
-eprint("whatsapp-web-backend listening on port 2020")
-server.serveforever();
+print("whatsapp-web-backend listening on port 2020")
+server.serveforever()

@@ -2,15 +2,11 @@ import sys
 
 sys.dont_write_bytecode = True
 
-import os
 import base64
 import datetime
 import json
-import io
 from threading import Thread
-from Crypto.Cipher import AES
-import hashlib
-import hmac
+
 import traceback
 
 import websocket
@@ -19,53 +15,10 @@ import pyqrcode
 
 import pprint
 from .utilities import *
-from .whatsapp_binary_reader import whatsappReadBinary
-from .whatsapp_binary_writter import whatsappWriteBinary
-import uuid
+from encoding.whatsapp_binary_reader import whatsappReadBinary
+from encoding.whatsapp_binary_writter import whatsappWriteBinary
 
-
-def HmacSha256(key, sign):
-    return hmac.new(key, sign, hashlib.sha256).digest()
-
-
-def HKDF(key, length, appInfo=""):  # implements RFC 5869, some parts from https://github.com/MirkoDziadzka/pyhkdf
-    key = HmacSha256("\0" * 32, key)
-    keyStream = ""
-    keyBlock = ""
-    blockIndex = 1
-    while len(keyStream) < length:
-        keyBlock = hmac.new(key, msg=keyBlock + appInfo + chr(blockIndex), digestmod=hashlib.sha256).digest()
-        blockIndex += 1
-        keyStream += keyBlock
-    return keyStream[:length]
-
-
-def AESPad(s):
-    bs = AES.block_size
-    return s + (bs - len(s) % bs) * chr(bs - len(s) % bs)
-
-
-def AESUnpad(s):
-    return s[:-ord(s[len(s) - 1:])]
-
-
-def AESEncrypt(key, plaintext):  # like "AESPad"/"AESUnpad" from https://stackoverflow.com/a/21928790
-    plaintext = AESPad(plaintext)
-    iv = os.urandom(AES.block_size)
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    return iv + cipher.encrypt(plaintext)
-
-
-def WhatsAppEncrypt(encKey, macKey, plaintext):
-    enc = AESEncrypt(encKey, plaintext)
-    return enc + HmacSha256(macKey, enc)  # this may need padding to 64 byte boundary
-
-
-def AESDecrypt(key, ciphertext):  # from https://stackoverflow.com/a/20868265
-    iv = ciphertext[:AES.block_size]
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    plaintext = cipher.decrypt(ciphertext[AES.block_size:])
-    return AESUnpad(plaintext)
+import datetime
 
 
 class WhatsAppWebClient:
@@ -77,7 +30,7 @@ class WhatsAppWebClient:
     websocketThread = None
     messageQueue = {}  # maps message tags (provided by WhatsApp) to more information (description and callback)
 
-    loginInfo = {
+    login_data = {
         "clientId": None,
         "serverRef": None,
         "privateKey": None,
@@ -98,7 +51,59 @@ class WhatsAppWebClient:
 
     def __init__(self):
         websocket.enableTrace(True)
+        self.data_server = ""
+        self.message_tag = None
+        self.message_content = None
         self.connect()
+
+    @staticmethod
+    def _save_json(data, path):
+        with open(path, 'w') as outfile:
+            json.dump(data, outfile, indent=4)
+
+    @staticmethod
+    def _save_contacts(contacts):
+        contact_data = []
+
+        for contact in contacts:
+            value = {"user": contact[0],
+                     "jid": contact[1].get("jid", None),
+                     "short": contact[1].get("short", None),
+                     "name": contact[1].get("name", None)}
+
+            contact_data.append(value)
+
+            WhatsAppWebClient._save_json(contact_data, "data/contacts.json")
+
+    @staticmethod
+    def _save_last_message(messages, type):
+
+        messages_data = []
+
+        for message in messages:
+            value = {message["key"]["id"]: {"user": message["key"].get("remoteJid",None),
+                                            "message": message.get("message", None),
+                                            "date_time": datetime.datetime.fromtimestamp(
+                                                float(message["messageTimestamp"])).isoformat()}}
+            messages_data.append(value)
+
+        WhatsAppWebClient._save_json(messages_data, "data/" + type + "_messages.json")
+
+    @staticmethod
+    def _verify_hmac(hmac_valid, data):
+
+        if hmac_valid != data:
+            raise ValueError("Hmac mismatch")
+
+    def _save(self, process_data):
+
+        if type(process_data[1]) is dict:
+            if process_data[1].get("type", "") == "contacts":
+                self._save_contacts(process_data[2])
+            elif process_data[1].get("add", "") == "last":
+                self._save_last_message(process_data[2], "last")
+            elif process_data[1].get("add", "") == "before":
+                self._save_last_message(process_data[2], "before")
 
     def onOpen(self, ws):
         print("Connection with whatsapp server")
@@ -109,98 +114,94 @@ class WhatsAppWebClient:
     def onClose(self, ws):
         print("WhatsApp backend Websocket closed.")
 
+    def _onLogin(self):
+
+        self.login_data["serverRef"] = json.loads(self.message_content)["ref"]
+        self.login_data["privateKey"] = curve25519.Private()
+        self.login_data["publicKey"] = self.login_data["privateKey"].get_public()
+
+        qrCodeContents = self.login_data["serverRef"] + "," + base64.b64encode(
+            self.login_data["publicKey"].serialize()) + "," + self.login_data["clientId"]
+        big_code = pyqrcode.create(qrCodeContents, error='L', version=27, mode='binary')
+        big_code.png('qr/code.png', scale=2)
+
+        print("set server id: " + self.login_data["serverRef"])
+        print("qr code contents: " + qrCodeContents)
+        print(big_code)
+
+    def _read_receive_data(self):
+        processedData = ""
+        if self.message_content != "":
+            hmac_valid = HmacSha256(self.login_data["key"]["macKey"], self.message_content[32:])
+            self._verify_hmac(hmac_valid, self.message_content[:32])
+
+            decryptedMessage = AESDecrypt(self.login_data["key"]["encKey"], self.message_content[32:])
+
+            try:
+                processedData = whatsappReadBinary(decryptedMessage, True)
+            except:
+                processedData = {"traceback": traceback.format_exc().splitlines()}
+            finally:
+                self._save(processedData)
+
+    def _onConnection(self, load_data):
+        if isinstance(load_data, list) and len(load_data) > 0:  # check if the result is an array
+            print(json.dumps(load_data))
+
+            if load_data[0] == "Conn":
+
+                self.connInfo["clientToken"] = load_data[1]["clientToken"]
+                self.connInfo["serverToken"] = load_data[1]["serverToken"]
+                self.connInfo["browserToken"] = load_data[1]["browserToken"]
+                self.connInfo["me"] = load_data[1]["wid"]
+
+                self.connInfo["secret"] = base64.b64decode(load_data[1]["secret"])
+                self.connInfo["sharedSecret"] = self.login_data["privateKey"].get_shared_key(
+                    curve25519.Public(self.connInfo["secret"][:32]), lambda a: a)
+
+                sse = self.connInfo["sharedSecretExpanded"] = HKDF(self.connInfo["sharedSecret"], 80)
+
+                hmac_valid = HmacSha256(sse[32:64], self.connInfo["secret"][:32] + self.connInfo["secret"][64:])
+
+                self._verify_hmac(hmac_valid, self.connInfo["secret"][32:64])
+
+                keysEncrypted = sse[64:] + self.connInfo["secret"][64:]
+                keysDecrypted = AESDecrypt(sse[:32], keysEncrypted)
+
+                self.login_data["key"]["encKey"] = keysDecrypted[:32]
+                self.login_data["key"]["macKey"] = keysDecrypted[32:64]
+
+            elif load_data[0] == "Stream":
+                pass
+            elif load_data[0] == "Props":
+                pass
+
     def onMessage(self, ws, message):
         try:
-            messageSplit = message.split(",", 1)
-            messageTag = messageSplit[0]
-            messageContent = messageSplit[1]
+            self.data_server = message.split(",", 1)
+            self.message_tag = self.data_server[0]
+            self.message_content = self.data_server[1]
 
-            if messageTag in self.messageQueue:  # when the server responds to a client's message
-                pend = self.messageQueue[messageTag]
+            if self.message_tag in self.messageQueue:
+                pend = self.messageQueue[self.message_tag]
                 if pend["desc"] == "_login":
-                    print("Message after login: ", message)
-
-                    self.loginInfo["serverRef"] = json.loads(messageContent)["ref"]
-
-                    print("set server id: " + self.loginInfo["serverRef"])
-
-                    self.loginInfo["privateKey"] = curve25519.Private()
-                    self.loginInfo["publicKey"] = self.loginInfo["privateKey"].get_public()
-
-                    qrCodeContents = self.loginInfo["serverRef"] + "," + base64.b64encode(
-                        self.loginInfo["publicKey"].serialize()) + "," + self.loginInfo["clientId"]
-
-                    print("qr code contents: " + qrCodeContents)
-
-                    big_code = pyqrcode.create(qrCodeContents, error='L', version=27, mode='binary')
-                    big_code.png('qr/code.png', scale=2)
-
-                    print(big_code)
-
+                    self._onLogin()
             else:
                 try:
-                    jsonObj = json.loads(messageContent)  # try reading as json
+                    load_data = json.loads(self.message_content)
                 except ValueError as e:
-                    if messageContent != "":
-                        hmacValidation = HmacSha256(self.loginInfo["key"]["macKey"], messageContent[32:])
-                        if hmacValidation != messageContent[:32]:
-                            raise ValueError("Hmac mismatch")
-
-                        decryptedMessage = AESDecrypt(self.loginInfo["key"]["encKey"], messageContent[32:])
-
-                        try:
-                            processedData = whatsappReadBinary(decryptedMessage, True)
-                            messageType = "binary"
-
-                        except:
-                            processedData = {"traceback": traceback.format_exc().splitlines()}
-                            messageType = "error"
-                        finally:
-                            pprint.pprint(processedData)
-                            print("*" * 60)
-
+                    self._read_receive_data()
                 else:
-                    if isinstance(jsonObj, list) and len(jsonObj) > 0:  # check if the result is an array
-                        print(json.dumps(jsonObj))
-                        if jsonObj[0] == "Conn":
-                            self.connInfo["clientToken"] = jsonObj[1]["clientToken"]
-                            self.connInfo["serverToken"] = jsonObj[1]["serverToken"]
-                            self.connInfo["browserToken"] = jsonObj[1]["browserToken"]
-                            self.connInfo["me"] = jsonObj[1]["wid"]
-
-                            self.connInfo["secret"] = base64.b64decode(jsonObj[1]["secret"])
-                            self.connInfo["sharedSecret"] = self.loginInfo["privateKey"].get_shared_key(curve25519.Public(self.connInfo["secret"][:32]), lambda a: a)
-
-
-                            sse = self.connInfo["sharedSecretExpanded"] = HKDF(self.connInfo["sharedSecret"], 80)
-
-
-                            hmacValidation = HmacSha256(sse[32:64],
-                                                        self.connInfo["secret"][:32] + self.connInfo["secret"][64:])
-                            if hmacValidation != self.connInfo["secret"][32:64]:
-                                raise ValueError("Hmac mismatch")
-
-                            keysEncrypted = sse[64:] + self.connInfo["secret"][64:]
-                            keysDecrypted = AESDecrypt(sse[:32], keysEncrypted)
-                            self.loginInfo["key"]["encKey"] = keysDecrypted[:32]
-                            self.loginInfo["key"]["macKey"] = keysDecrypted[32:64]
-
-                            print(
-                                "set connection info: client, server and browser token secret, shared secret, enc key, mac key")
-                            print("logged in as " + jsonObj[1]["pushname"] + " (" + jsonObj[1]["wid"] + ")")
-                        elif jsonObj[0] == "Stream":
-                            pass
-                        elif jsonObj[0] == "Props":
-                            pass
+                    self._onConnection(load_data)
         except:
             print(traceback.format_exc())
 
     def connect(self):
         self.activeWs = websocket.WebSocketApp("wss://w1.web.whatsapp.com/ws",
-                                               on_message=lambda ws, message: self.onMessage(ws, message),
-                                               on_error=lambda ws, error: self.onError(ws, error),
-                                               on_open=lambda ws: self.onOpen(ws),
-                                               on_close=lambda ws: self.onClose(ws),
+                                               on_message=self.onMessage,
+                                               on_error=self.onError,
+                                               on_open=self.onOpen,
+                                               on_close=self.onClose,
                                                header={"Origin: https://web.whatsapp.com"})
 
         self.websocketThread = Thread(target=self.activeWs.run_forever)
@@ -208,21 +209,33 @@ class WhatsAppWebClient:
         self.websocketThread.start()
 
     def generateQRCode(self, callback=None):
-        self.loginInfo["clientId"] = base64.b64encode(os.urandom(16))
-        messageTag = str(getTimestamp())
-        self.messageQueue[messageTag] = {"desc": "_login", "callback": callback}
-        message = messageTag + ',["admin","init",[0,2,9929],["Chromium at ' + datetime.datetime.now().isoformat() + '","Chromium"],"' + \
-                  self.loginInfo["clientId"] + '",true]'
+        tag = str(getTimestamp())
+
+        self.login_data["clientId"] = base64.b64encode(os.urandom(16))
+        self.messageQueue[tag] = {"desc": "_login", "callback": callback}
+        message = tag + ',["admin","init",[0,2,9929],["Chromium at ' + datetime.datetime.now().isoformat() + '","Chromium"],"' + \
+                  self.login_data["clientId"] + '",true]'
+
         self.activeWs.send(message)
 
     def send_message_whatsapp(self, _data, tag):
         data = json.loads(_data)
-        from .decript import encryptmessage
-        payload = json.dumps(["action", {'epoch': 1, 'type': 'relay'}, [{"key": {"remoteJid": data["to"], "FromMe":True}}, {"message": {"conversation": data["text"]}}, {"messageTimestamp": getTimestamp()}, {"status":"PENDING"}]])
 
+        payload = tag + json.dumps(['action', None, [{'key': {'fromMe': True,
+                                                              'id': '6CDE639D52E1ED9C097C',
+                                                              'remoteJid': '573227409582@s.whatsapp.net'},
+                                                      'message': {
+                                                          'conversation': 'Message sent by github.com/Rhymen/go-whatsapp'},
+                                                      'messageTimestamp': '1532905824',
+                                                      'status': 'PENDING'}]])
 
-        info= encryptmessage(str(getTimestamp()), payload, {"encKey": self.loginInfo["key"]["encKey"], 'macKey': self.loginInfo["key"]["macKey"]})
-        self.activeWs.send(info)
+        # payload = json.dumps(["action", {'epoch': 1, 'type': 'relay'}, [{"key": {"remoteJid": data["to"], "FromMe":True}}, {"message": {"conversation": data["text"]}}, {"messageTimestamp": getTimestamp()}, {"status":"PENDING"}]])
+        info = WhatsAppEncrypt(self.login_data["key"]["encKey"], self.login_data["key"]["macKey"], payload)
+
+        gg = whatsappWriteBinary(info)
+
+        # info= encryptmessage(str(getTimestamp()), payload, {"encKey": self.login_data["key"]["encKey"], 'macKey': self.login_data["key"]["macKey"]})
+        self.activeWs.send(gg)
 
     def disconnect(self):
         self.activeWs.send(

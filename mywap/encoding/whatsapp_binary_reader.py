@@ -1,4 +1,4 @@
-from .whatsapp_defines import WATags, WASingleByteTokens, WADoubleByteTokens, WAWebMessageInfo;
+from encoding.whatsapp_defines import WATags, WASingleByteTokens, WADoubleByteTokens, WAWebMessageInfo;
 
 
 class WABinaryReader:

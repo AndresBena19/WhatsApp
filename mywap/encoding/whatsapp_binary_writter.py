@@ -1,5 +1,5 @@
-from .whatsapp_defines import WATags, WASingleByteTokens, WADoubleByteTokens, WAWebMessageInfo;
-from .utilities import getNumValidKeys, encodeUTF8, ceil;
+from encoding.whatsapp_defines import WATags, WASingleByteTokens;
+from whatsapp_client.utilities import getNumValidKeys, encodeUTF8, ceil;
 
 
 class WABinaryWriter:

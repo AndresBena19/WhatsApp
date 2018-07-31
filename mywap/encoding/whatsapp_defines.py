@@ -1,6 +1,6 @@
 from google.protobuf import json_format
 import json
-import whatsapp_protobuf_pb2
+from encoding import whatsapp_protobuf_pb2
 
 
 class WATags:

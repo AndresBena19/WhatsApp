@@ -1,10 +1,7 @@
 from websocket import create_connection
 import json
-import time
-ws = create_connection("ws://localhost:2020/")
 
-def getTimestamp():
-    return int(time.time());
+ws = create_connection("ws://localhost:2020/")
 
 
 def generate_qr():
@@ -12,9 +9,9 @@ def generate_qr():
 
 
 def send_message():
-    data1 = {
+    data = {
         'attributes': {
-            'epoch': '1',
+            'epoch': '103',
             'type': 'relay'
         },
         'elements': 6,
@@ -30,7 +27,7 @@ def send_message():
                     [
                         {
                             'type': 'jid',
-                            'value': '573227409582@s.whatsapp.net'
+                            'value': '57322740958@s.whatsapp.net'
                         },
                         {
                             'type': 'fromme',
@@ -38,7 +35,7 @@ def send_message():
                         },
                         {
                             'type': 'messageid',
-                            'value': '3EB06792C2106FE24545'
+                            'value': '3EB06792C2106FE24217'
                         },
                         {
                             'type': 'message',
@@ -48,7 +45,7 @@ def send_message():
                                     'value': [
                                         {
                                             'type': 'text',
-                                            'value': 'Muy buenas tardes'
+                                            'value': 'prova1234567890'
                                         },
                                         {
                                             'type': 'context',
@@ -60,7 +57,7 @@ def send_message():
                         },
                         {
                             'type': 'timestamp',
-                            'value': str(getTimestamp())
+                            'value': 1481879713
                         },
                         {
                             'type': 'status',
@@ -71,8 +68,8 @@ def send_message():
             }
         ]
     }
-
     ws.send(json.dumps({"command": "send", "data": json.dumps({"to":'573227409582@s.whatsapp.net' ,"text": "hola"})}))
+
 
 
 
@@ -104,7 +101,4 @@ while True:
 Get the members of group
 
 437.--109,,["query","GroupMetadata","xxxxx-yyyyyy@g.us"]
-
-
-https://github.com/Enrico204/whatsapp-decoding/blob/master/PROTOCOL.md
 '''
