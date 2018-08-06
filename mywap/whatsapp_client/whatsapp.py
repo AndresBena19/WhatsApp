@@ -220,7 +220,7 @@ class WhatsAppWebClient:
 
     def send_message_whatsapp(self, _data, tag):
         data = json.loads(_data)
-
+        """
         payload = tag + json.dumps(['action', None, [{'key': {'fromMe': True,
                                                               'id': '6CDE639D52E1ED9C097C',
                                                               'remoteJid': '573227409582@s.whatsapp.net'},
@@ -229,13 +229,15 @@ class WhatsAppWebClient:
                                                       'messageTimestamp': '1532905824',
                                                       'status': 'PENDING'}]])
 
-        # payload = json.dumps(["action", {'epoch': 1, 'type': 'relay'}, [{"key": {"remoteJid": data["to"], "FromMe":True}}, {"message": {"conversation": data["text"]}}, {"messageTimestamp": getTimestamp()}, {"status":"PENDING"}]])
+        payload = json.dumps(["action", {'epoch': 1, 'type': 'relay'}, [{"key": {"remoteJid": data["to"], "FromMe":True}}, {"message": {"conversation": data["text"]}}, {"messageTimestamp": getTimestamp()}, {"status":"PENDING"}]])
         info = WhatsAppEncrypt(self.login_data["key"]["encKey"], self.login_data["key"]["macKey"], payload)
 
         gg = whatsappWriteBinary(info)
 
         # info= encryptmessage(str(getTimestamp()), payload, {"encKey": self.login_data["key"]["encKey"], 'macKey': self.login_data["key"]["macKey"]})
         self.activeWs.send(gg)
+        """
+        pass
 
     def disconnect(self):
         self.activeWs.send(
